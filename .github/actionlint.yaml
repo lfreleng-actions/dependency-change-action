@@ -1,0 +1,29 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Path-specific configurations.
+paths:
+  .github/workflows/testing.yaml:
+    ignore:
+      # Ignore deliberate test failure
+      - 'input "invalid_input" is not defined in action .+'
+      - 'missing input "input" which is required by action .+'
+      # GitHub introduced the self-repository 'uses: $/...' syntax in
+      # July 2026, and zizmor's self-repository audit (v1.30.0+) reports
+      # the older workspace-relative './' form as a finding. This fork of
+      # actionlint (v1.17.0) understands '$/{path}' but rejects a bare
+      # '$/', copying an empty-path check from actions/runner#4457 that
+      # actions/runner#4669 has since removed. GitHub accepts and runs a
+      # bare '$/' for an action at the repository root.
+      #
+      # The fork returns before loading action.yaml, so ignoring this
+      # also skips input and output checks for those steps.
+      # kjanat/actionlint#200 fixes it; drop this ignore when a release
+      # containing it is pinned (lfreleng-actions/actions-template#253).
+      #
+      # Note 'path is missing' rather than upstream v1.7.12's 'ref is
+      # missing': this fork reports the bare case differently. The
+      # closing quote sits immediately after '$/', so malformed
+      # extra-slash forms such as '$//' are still reported.
+      - 'specifying action "\$/" in invalid format because path is missing'
