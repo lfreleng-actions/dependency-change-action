@@ -20,23 +20,63 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
-    runs-on: ubuntu-latest
+  ### Detection logic against scratch git repositories ###
+  detection:
+    name: "Test detection (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
+      # Harden-runner supports Linux runners only.
       # Load the egress allow-list out-of-band from the
       # organisation's .github repository and publish it as
       # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        if: runner.os == 'Linux'
         with:
           config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
 
       # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        if: runner.os == 'Linux'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # macOS runs the system /bin/bash, 3.2, which the script supports
+      - name: "Run the detection tests"
+        shell: bash
+        run: |
+          # Run the detection tests
+          PATH="/bin:$PATH" bash tests/dependency-change-test.sh
+
+  ### Every fail-closed guard must have a test that notices it gone ###
+  mutation:
+    name: "Mutation-test the fail-closed guards"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        with:
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
       - name: 'Harden runner (block)'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
@@ -50,41 +90,381 @@ jobs:
         with:
           persist-credentials: false
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
+      - name: "Mutation-test the guards"
         shell: bash
         run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Mutation-test the guards
+          bash tests/mutate.sh
 
-      - name: "Running local action: ${{ github.repository }}"
+  ### The composite action, run in this repository's own checkout ###
+  action:
+    name: "Test local GitHub Action (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        if: runner.os == 'Linux'
+        with:
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      - name: 'Harden runner (block)'
+        if: runner.os == 'Linux'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # Depth 2 holds HEAD^1, the base of a pull request's merge commit
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: "Detect from the triggering event"
+        id: event
         uses: $/
         with:
-          input: "test input 💬"
+          ecosystems: "node"
 
-      - name: "Validated local action: ${{ github.repository }}"
+      - name: "Validate event detection"
         shell: bash
         env:
-          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.event.outputs.changed }}
+          REASON: ${{ steps.event.outputs.reason }}
+          BASE: ${{ steps.event.outputs.base }}
+          MANIFEST: ${{ steps.event.outputs.manifest }}
         run: |
-          # Local action validation
-          echo "Validated local action: $REPO"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Pull requests resolve; manual runs never do
+          set -euo pipefail
+          echo "event=${EVENT} changed=${CHANGED} reason=${REASON}"
+          case "${EVENT}" in
+            pull_request)
+              if [ "${CHANGED}" != "false" ] && [ "${CHANGED}" != "true" ]
+              then
+                echo "Expected a resolved result ❌"
+                exit 1
+              fi
+              if [ "$(cat "${MANIFEST}")" != "{\"changed\": ${CHANGED}}" ]
+              then
+                echo "Sidecar does not match the output ❌"
+                exit 1
+              fi
+              if [ "${REASON}" != "since ${BASE:0:12}" ]; then
+                echo "Unexpected reason ❌"
+                exit 1
+              fi
+              ;;
+            workflow_dispatch)
+              if [ -n "${CHANGED}${BASE}${MANIFEST}" ] ||
+                [ -e dependency-change.json ]; then
+                echo "Expected an unresolved result ❌"
+                exit 1
+              fi
+              ;;
+          esac
+          rm -f dependency-change.json
+          echo "Event detection behaved ✅"
 
-      # yamllint disable-line rule:line-length
-      - name: "Running local action: ${{ github.repository }} [Override Failure]"
-        uses: $/
-        id: failure
-        continue-on-error: true
-        with:
-          invalid_input: "Some garbage"
-
-      # Failure testing is also important
-      - name: "Error if step above did NOT fail"
-        if: steps.failure.outcome == 'success'
+      - name: "Commit a dependency change and plant a sidecar"
         shell: bash
         run: |
-          # Error if step above did NOT fail
-          echo "Error: previous test step did NOT fail ❌"
+          # Commit a dependency change and plant a sidecar
+          set -euo pipefail
+          printf '{"name": "fixture"}\n' > package.json
+          git add package.json
+          git -c user.name=CI -c user.email=ci@example.invalid \
+            commit -q --no-verify -m "Test: Add package.json"
+          printf '{"changed": false}\n' > planted.json
+
+      - name: "Detect the committed change"
+        id: changed
+        uses: $/
+        with:
+          ecosystems: "python, node"
+          base: "HEAD^1"
+          output: "planted.json"
+
+      - name: "Detect with no matching preset"
+        id: unchanged
+        uses: $/
+        with:
+          ecosystems: "rust"
+          patterns: |
+            Dockerfile
+          base: "HEAD^1"
+          output: "out/unchanged.json"
+
+      - name: "Detect against a missing base"
+        id: unresolved
+        uses: $/
+        with:
+          ecosystems: "node"
+          base: "no-such-ref"
+          output: "planted.json"
+
+      - name: "Validate action outputs and sidecars"
+        shell: bash
+        env:
+          CHANGED_TRUE: ${{ steps.changed.outputs.changed }}
+          MANIFEST_TRUE: ${{ steps.changed.outputs.manifest }}
+          CHANGED_FALSE: ${{ steps.unchanged.outputs.changed }}
+          MANIFEST_FALSE: ${{ steps.unchanged.outputs.manifest }}
+          CHANGED_NONE: ${{ steps.unresolved.outputs.changed }}
+          MANIFEST_NONE: ${{ steps.unresolved.outputs.manifest }}
+          BASE_NONE: ${{ steps.unresolved.outputs.base }}
+          REASON_NONE: ${{ steps.unresolved.outputs.reason }}
+        run: |
+          # Validate action outputs and sidecars
+          set -euo pipefail
+          if [ "${CHANGED_TRUE}" != "true" ] ||
+            [ "${MANIFEST_TRUE}" != "planted.json" ]; then
+            echo "Expected a committed package.json to count ❌"
+            exit 1
+          fi
+          if [ "${CHANGED_FALSE}" != "false" ] ||
+            [ "$(cat "${MANIFEST_FALSE}")" != '{"changed": false}' ]; then
+            echo "Expected no rust or Dockerfile change ❌"
+            exit 1
+          fi
+          # The last run removed the sidecar the first one wrote
+          if [ -n "${CHANGED_NONE}${MANIFEST_NONE}${BASE_NONE}" ] ||
+            [ -e planted.json ]; then
+            echo "Expected an unresolved result and no sidecar ❌"
+            exit 1
+          fi
+          if [[ "${REASON_NONE}" != unresolved:* ]]; then
+            echo "Expected an unresolved reason ❌"
+            exit 1
+          fi
+          echo "Action outputs and sidecars validated ✅"
+
+      - name: "Run with an unknown preset [Expected Failure]"
+        id: unknown
+        continue-on-error: true
+        uses: $/
+        with:
+          ecosystems: "node,cobol"
+
+      - name: "Run with neither ecosystems nor patterns [Expected Failure]"
+        id: empty
+        continue-on-error: true
+        uses: $/
+
+      - name: "Error if an invalid configuration did NOT fail"
+        if: >-
+          steps.unknown.outcome == 'success' ||
+          steps.empty.outcome == 'success'
+        shell: bash
+        run: |
+          # Error if an invalid configuration did NOT fail
+          echo "Error: an invalid configuration did NOT fail ❌"
           exit 1
+
+  ### End to end: the signal gates grype-scan-action as designed ###
+  grype:
+    name: "Gate grype-scan-action"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        with:
+          config: '@18d9c4446bea555d0783e850f6d295f844fe8f67'  # v0.1.1
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # lodash 4.17.4 reports reliably at high and critical, so every
+      # scan below has findings that gate whenever the gate is armed
+      - name: "Commit a dependency change and write an SBOM"
+        shell: bash
+        run: |
+          # Commit a dependency change and write an SBOM
+          set -euo pipefail
+          printf '{"name": "fixture"}\n' > package.json
+          git add package.json
+          git -c user.name=CI -c user.email=ci@example.invalid \
+            commit -q --no-verify -m "Test: Add package.json"
+          cat > sbom-cyclonedx.json <<'JSON'
+          {"bomFormat": "CycloneDX", "specVersion": "1.5",
+           "version": 1,
+           "components": [
+             {"bom-ref": "lodash-1", "type": "library",
+              "name": "lodash", "version": "4.17.4",
+              "purl": "pkg:npm/lodash@4.17.4"}
+           ]}
+          JSON
+
+      - name: "Detect: changed"
+        id: detect_true
+        uses: $/
+        with:
+          ecosystems: "node"
+          base: "HEAD^1"
+          output: "dependency-change-true.json"
+
+      - name: "Detect: unchanged"
+        id: detect_false
+        uses: $/
+        with:
+          ecosystems: "go"
+          base: "HEAD^1"
+          output: "dependency-change-false.json"
+
+      - name: "Detect: unresolved"
+        id: detect_none
+        uses: $/
+        with:
+          ecosystems: "node"
+          base: "no-such-ref"
+          output: "dependency-change-none.json"
+
+      - name: "Validate the three signals"
+        shell: bash
+        env:
+          SIGNALS: >-
+            ${{ steps.detect_true.outputs.changed }}/${{
+            steps.detect_false.outputs.changed }}/${{
+            steps.detect_none.outputs.changed }}
+        run: |
+          # Validate the three signals
+          set -euo pipefail
+          if [ "${SIGNALS}" != "true/false/" ]; then
+            echo "Unexpected signals '${SIGNALS}' ❌"
+            exit 1
+          fi
+          echo "Signals true, false and unresolved ✅"
+
+      # yamllint disable rule:line-length
+      - name: "Scan: sidecar true"
+        id: sidecar_true
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependency-change-manifest: "dependency-change-true.json"
+          upload-artifact: "false"
+          bypass-enabled: "false"
+
+      - name: "Scan: sidecar false"
+        id: sidecar_false
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependency-change-manifest: "dependency-change-false.json"
+          upload-artifact: "false"
+          bypass-enabled: "false"
+
+      # The unresolved run wrote no sidecar, so this path is absent
+      - name: "Scan: sidecar unresolved"
+        id: sidecar_none
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependency-change-manifest: "dependency-change-none.json"
+          upload-artifact: "false"
+          bypass-enabled: "false"
+
+      - name: "Scan: output true"
+        id: output_true
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependencies-changed: ${{ steps.detect_true.outputs.changed }}
+          upload-artifact: "false"
+          bypass-enabled: "false"
+
+      - name: "Scan: output false"
+        id: output_false
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependencies-changed: ${{ steps.detect_false.outputs.changed }}
+          upload-artifact: "false"
+          bypass-enabled: "false"
+
+      # An empty output falls through to the sidecar, which is absent
+      - name: "Scan: output unresolved"
+        id: output_none
+        continue-on-error: true
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: "sbom-cyclonedx.json"
+          fail-on: "high"
+          gate-when: "dependencies-changed"
+          dependencies-changed: ${{ steps.detect_none.outputs.changed }}
+          dependency-change-manifest: ${{ steps.detect_none.outputs.manifest }}
+          upload-artifact: "false"
+          bypass-enabled: "false"
+      # yamllint enable rule:line-length
+
+      - name: "Validate gate-active for each signal"
+        shell: bash
+        env:
+          GATES: >-
+            ${{ steps.sidecar_true.outputs.gate-active }}/${{
+            steps.sidecar_false.outputs.gate-active }}/${{
+            steps.sidecar_none.outputs.gate-active }}/${{
+            steps.output_true.outputs.gate-active }}/${{
+            steps.output_false.outputs.gate-active }}/${{
+            steps.output_none.outputs.gate-active }}
+          OUTCOMES: >-
+            ${{ steps.sidecar_true.outcome }}/${{
+            steps.sidecar_false.outcome }}/${{
+            steps.sidecar_none.outcome }}/${{
+            steps.output_true.outcome }}/${{
+            steps.output_false.outcome }}/${{
+            steps.output_none.outcome }}
+        run: |
+          # Changed and unresolved arm the gate; unchanged withholds it
+          set -euo pipefail
+          echo "gate-active: ${GATES}"
+          echo "outcomes:    ${OUTCOMES}"
+          want="true/false/true/true/false/true"
+          if [ "${GATES}" != "${want}" ]; then
+            echo "Expected gate-active ${want} ❌"
+            exit 1
+          fi
+          want="failure/success/failure/failure/success/failure"
+          if [ "${OUTCOMES}" != "${want}" ]; then
+            echo "Expected outcomes ${want} ❌"
+            exit 1
+          fi
+          echo "grype-scan-action gates as designed ✅"
