@@ -106,17 +106,30 @@ is unknown: `grype-scan-action` rejects any other non-empty value.
   invalid pattern, no patterns at all, or an `output` that names a
   directory or whose directory passes through a symbolic link inside
   the working directory, which could reach a file outside the
-  checkout. What it finds never fails the step.
+  checkout. The check follows the path as the file system does, so an
+  absolute spelling such as `/work/./repo/out` or one through a link
+  above the checkout gets no exemption, and it knows the working
+  directory by identity, not spelling, so it treats `/work/REPO/out`
+  on a file system that folds case as `/work/repo/out`. It expands a
+  link outside the working directory one component at a time, never
+  in a single step, and catches a link outside that targets one
+  inside. It checks a directory name ending in a newline as spelt,
+  and a working directory whose name ends in one, and fails when it
+  lacks search permission on a directory on the path. What it finds
+  never fails the step.
 - It reads, never writes, git state and works offline. A shallow
   checkout that lacks the base leaves the result unresolved; the
   action does not deepen it.
 - It logs one line per matched file and a final verdict, with no
   annotations or step summary. File names print on one line, with
-  newlines escaped, so a name cannot forge a workflow command.
+  newlines escaped and the runner's legacy `##[` marker written as
+  `#\#[`, so a name cannot forge a workflow command.
 
 Each guard that leaves the result unresolved has a test that fails when
 the guard goes; `tests/mutate.sh` proves it by disabling each guard in
-turn.
+turn. A mutant still runs the guard's condition, with everything it
+writes or sets, then forces the decision to false, so no unrelated
+breakage can kill it: a test has to reach the guarded failure.
 
 ## Choosing the base
 
@@ -158,12 +171,67 @@ stores them, byte for byte.
   path segment. Patterns may not use `**`, `?`, `[`, `]`, `\`, a leading
   `/`, or `.` and `..` segments; such a pattern fails the step. Every
   other character, `(`, `|`, `+`, `@` and `!` included, matches itself.
-- A submodule pointer that changes inside `path-prefix` counts as a
-  change.
-- A symbolic link that changes counts as a change when a pattern could
-  match beneath it, as it may name a directory: any link inside
-  `path-prefix`, and above it a link such as `buildSrc` or `gradle`
-  that an anchored pattern reaches past.
+- A submodule pointer or a symbolic link that changes counts as a
+  change when a pattern could match beneath it, as either may stand
+  for a directory: any inside `path-prefix`, and above it one such as
+  `buildSrc` or `gradle` that an anchored pattern reaches past.
+- A change reached through an unchanged symbolic link counts under the
+  link's name. With `package.json -> manifests/node.json`, a change to
+  `manifests/node.json` is a change to `package.json`; with
+  `buildSrc -> shared/build`, a change beneath `shared/build` is a
+  change beneath `buildSrc`. The action resolves each link a pattern
+  could reach, in the base and in `HEAD`, through chains of links and
+  links beneath a linked directory, and also counts a change to any
+  link it followed on the way. A target spelt with `.`, `..` or `//`,
+  or reached through a link outside the checkout, resolves as the file
+  system would, so `/work/./repo/x` and `../repo/x` both name `x` in
+  the checkout at `/work/repo`. A lookup that enters a submodule
+  continues through its checked-out files, so a `..` or a link there
+  that leads back into the repository still counts; a target that
+  stays inside the submodule counts when its pointer moves. A file
+  outside the repository is not part of the change, but a change to a
+  link followed to reach it still counts. The result stays unresolved
+  when a link's target is missing from the checkout, a lookup follows
+  more than 40 links, the links a pattern could reach lead to more
+  than 1000 paths in one revision, as a link to its own parent
+  directory does, or a link reaches a directory outside the repository
+  beneath which a pattern could match, since a file there could link
+  back into the checkout. A lookup that lacks search permission on a
+  directory, or fails to read a link, also leaves it unresolved: a
+  failed probe never counts as "not a link".
+- On a file system that folds case, as macOS and Windows do by
+  default, `package.json -> manifests/NODE.json` reads a tracked
+  `manifests/node.json`, and `/work/REPO` is the checkout at
+  `/work/repo`. A lookup leaving the repository recognises the
+  checkout, and each submodule's checkout, by identity rather than
+  spelling. Inside the repository, the result stays unresolved when a
+  link target, or a directory on its way, is a path the tree spells
+  otherwise, whatever the runner's file system. Git folds ASCII
+  letters alone, so a target with any other byte must match a tracked
+  path byte for byte. A target the tree holds in no spelling is
+  missing, as any other dangling target is.
+- A submodule is part of the path, not the end of it. Once
+  initialised, its files sit in the checkout, and the action resolves
+  every link among them that a pattern could reach, whether a pattern
+  reaches the submodule directly (`gradle` is itself a submodule) or
+  through a link (`gradle -> vendor/lib`), under the same limits. With
+  the `gradle` preset, `path-prefix: app`, an unchanged
+  `gradle -> vendor/lib` link and
+  `libs.versions.toml -> ../../manifests/deps.toml` in the submodule
+  at `vendor/lib`, a change to `manifests/deps.toml` is a change to
+  `gradle/libs.versions.toml`. Its files count when the checkout
+  holds the submodule at its pointer in `HEAD`, which the action
+  checks on every path that enters it: a file link passing through,
+  such as `app/package.json -> ../vendor/lib/node.json`, as much as a
+  directory link. The rule recurses: a submodule nested in another
+  counts at the pointer its owner's recorded commit holds, never at
+  another. The result stays unresolved when a submodule is not at its
+  pointer, or when the action cannot read its root, list its files or
+  list the submodules nested in it; an unreadable root, or one whose
+  entries all have names made of newlines, is never taken for an
+  empty one. A submodule that nobody initialised has no files
+  for the build to read, so its pointer stands for everything beneath
+  it.
 
 `path-prefix` resolves against the working directory. The result stays
 unresolved when the prefix does not exist, names no directory tracked
@@ -205,6 +273,10 @@ its manifest; that is the SBOM generator's job.
 bash tests/dependency-change-test.sh   # scratch git repositories
 bash tests/mutate.sh                   # every guard has a failing test
 ```
+
+`tests/mutate.sh` runs the mutants in parallel, one per CPU unless
+`MUTATE_JOBS` says otherwise, and stops each mutant's suite at its
+first failing case, since one is all a kill needs.
 
 The script runs on Bash 3.2, the version macOS ships, and CI runs the
 tests on Linux and macOS.
