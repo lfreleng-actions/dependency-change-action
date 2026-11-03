@@ -6,9 +6,6 @@
 paths:
   .github/workflows/testing.yaml:
     ignore:
-      # Ignore deliberate test failure
-      - 'input "invalid_input" is not defined in action .+'
-      - 'missing input "input" which is required by action .+'
       # GitHub introduced the self-repository 'uses: $/...' syntax in
       # July 2026, and zizmor's self-repository audit (v1.30.0+) reports
       # the older workspace-relative './' form as a finding. This fork of

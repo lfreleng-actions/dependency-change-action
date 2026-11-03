@@ -2,52 +2,85 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+# dependency-change-action
+name: "🔎 Dependency Change Detection"
+description: >-
+  Reports whether a Gerrit change or GitHub pull request touched the
+  files that declare or lock its dependencies, as a sidecar that
+  grype-scan-action reads to decide whether findings gate or warn.
+  Fails closed: when the answer cannot be proven, no sidecar is written.
 
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  ecosystems:
+    description: >-
+      Comma-separated presets: node, python, go, maven, gradle, rust,
+      docker. An unknown name fails the step. Required unless patterns
+      is set.
+    required: false
+    default: ""
+  patterns:
+    description: >-
+      Extra patterns, one per line, added to the presets. A name matches
+      a file name, a path containing '/' matches relative to the
+      directory it is anchored at, a trailing '/' matches everything
+      beneath a directory, and '*' matches within one path segment.
+    required: false
+    default: ""
+  path-prefix:
+    description: >-
+      Project directory, relative to the checkout. Patterns match at any
+      depth inside it, and above it only when anchored at an ancestor.
+    required: false
+    default: "."
+  gerrit-refspec:
+    description: >-
+      Set on Gerrit-triggered runs; the checkout is then the change
+      itself and its parent, HEAD^1, is the base.
+    required: false
+    default: ""
+  base:
+    description: >-
+      Explicit base commit, overriding event detection. The result is
+      unresolved when it does not name a commit in the checkout.
+    required: false
+    default: ""
+  output:
+    description: >-
+      Sidecar path, written only when the result is resolved. Any file
+      already there is removed first.
+    required: false
+    default: "dependency-change.json"
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  changed:
+    description: >-
+      'true', 'false', or empty when unresolved; feeds
+      grype-scan-action's dependencies-changed input directly.
+    value: ${{ steps.detect.outputs.changed }}
+  reason:
+    description: "One line saying why, such as 'since a1b2c3d4e5f6'"
+    value: ${{ steps.detect.outputs.reason }}
+  base:
+    description: "The base commit compared against; empty when unresolved"
+    value: ${{ steps.detect.outputs.base }}
+  manifest:
+    description: "Path to the sidecar; empty when unresolved"
+    value: ${{ steps.detect.outputs.manifest }}
 
 runs:
   using: "composite"
   steps:
-    - name: "Friendly Name"
-      id: code
+    - name: "Detect dependency changes"
+      id: detect
       shell: bash
       env:
-        INPUT_VALUE: ${{ inputs.input }}
+        INPUT_ECOSYSTEMS: ${{ inputs.ecosystems }}
+        INPUT_PATTERNS: ${{ inputs.patterns }}
+        INPUT_PATH_PREFIX: ${{ inputs.path-prefix }}
+        INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        EVENT_BEFORE: ${{ github.event.before }}
       run: |
-        # Friendly Name
-        input="$INPUT_VALUE"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
-          exit 1
-        fi
-
-        # Write the output using the multiline heredoc format with a random
-        # delimiter so that an input containing newlines cannot inject
-        # additional keys into $GITHUB_OUTPUT (output-file injection). The
-        # delimiter is built from shell-builtin randomness (no external
-        # tools such as openssl/uuidgen, which are not guaranteed on
-        # self-hosted runners) and regenerated until it is provably absent
-        # from the value being emitted.
-        delimiter="ghadelim_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
-        while [[ "$input" == *"$delimiter"* ]]; do
-          delimiter="ghadelim_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
-        done
-        {
-          printf '%s<<%s\n' 'output' "$delimiter"
-          printf '%s\n' "$input"
-          printf '%s\n' "$delimiter"
-        } >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+        # Detect dependency changes
+        bash "$GITHUB_ACTION_PATH/scripts/dependency-change.sh"
