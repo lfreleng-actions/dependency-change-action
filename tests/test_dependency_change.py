@@ -615,7 +615,6 @@ class MatchingTests(ActionTestCase):
         self.change("gradle/libs.versions.toml")
         self.assert_changed(self.run_action(self.repo, ecosystems="gradle"), True)
 
-    @unittest.expectedFailure
     def test_maven_jvm_config_counts(self) -> None:
         self.seed("src/Main.java")
         self.change(".mvn/jvm.config")
@@ -623,7 +622,6 @@ class MatchingTests(ActionTestCase):
         self.change(".mvn/wrapper/maven-wrapper.properties")
         self.assert_changed(self.run_action(self.repo, ecosystems="maven"), False)
 
-    @unittest.expectedFailure
     def test_gradle_applied_scripts_count(self) -> None:
         self.seed("src/Main.java")
         for script in (
