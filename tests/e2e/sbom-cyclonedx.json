@@ -1,0 +1,20 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "dependency-change-action-e2e",
+      "version": "0.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "example",
+      "version": "1.0.0",
+      "purl": "pkg:generic/example@1.0.0"
+    }
+  ]
+}

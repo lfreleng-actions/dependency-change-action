@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Tooling only: the action itself installs nothing and runs
+# scripts/dependency_change with the runner's python3.
+
+[project]
+name = "dependency-change-action"
+version = "0.1.0"
+description = "Detect whether a change touched dependency files, reading git objects only"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.mypy]
+strict = true
+mypy_path = "scripts"
+files = ["scripts", "tests"]
+
+[tool.basedpyright]
+pythonVersion = "3.9"
+typeCheckingMode = "strict"
+extraPaths = ["scripts"]
+include = ["scripts", "tests"]
