@@ -20,13 +20,59 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
+  ### Unit tests and the mutation run, on both runner families ###
   tests:
+    name: "Test suite (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      # Harden-runner supports Linux runners only.
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        if: runner.os == 'Linux'
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        if: runner.os == 'Linux'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The suite builds real git repositories, so it needs an identity
+      # only through the configuration each test repository sets itself.
+      - name: "Run the test suite and the mutation run"
+        shell: bash
+        run: |
+          # Run the test suite and the mutation run
+          python3 --version
+          python3 -m unittest discover -s tests -v
+
+  ### Test the GitHub Action in this Repository ###
+  action:
     name: "Test local GitHub Action"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
     steps:
       # Load the egress allow-list out-of-band from the
       # organisation's .github repository and publish it as
@@ -45,32 +91,118 @@ jobs:
           allowed-endpoints: >
             ${{ env.CONNECTION_ALLOW_LIST }}
 
+      # Depth 2 keeps HEAD^1, the base for pull_request runs.
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
-        shell: bash
-        run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          fetch-depth: 2
 
       - name: "Running local action: ${{ github.repository }}"
+        id: detect
         uses: $/
         with:
-          input: "test input 💬"
+          ecosystems: 'python'
 
       - name: "Validated local action: ${{ github.repository }}"
         shell: bash
         env:
-          REPO: ${{ github.repository }}
+          CHANGED: ${{ steps.detect.outputs.changed }}
+          REASON: ${{ steps.detect.outputs.reason }}
+          BASE: ${{ steps.detect.outputs.base }}
+          MANIFEST: ${{ steps.detect.outputs.manifest }}
+          EVENT: ${{ github.event_name }}
         run: |
           # Local action validation
-          echo "Validated local action: $REPO"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          echo "changed='$CHANGED' base='$BASE' reason='$REASON'"
+          case "$CHANGED" in
+            true|false)
+              test -f "$MANIFEST" || { echo "Error: no sidecar ❌"; exit 1; }
+              test -n "$BASE" || { echo "Error: no base ❌"; exit 1; }
+              ;;
+            "")
+              if [ -n "$MANIFEST" ]; then
+                echo "Error: sidecar on unresolved ❌"
+                exit 1
+              fi
+              case "$REASON" in
+                unresolved:*) ;;
+                *) echo "Error: unresolved without a reason ❌"; exit 1 ;;
+              esac
+              if [ "$EVENT" = 'pull_request' ]; then
+                echo "Error: a pull_request run must resolve ❌"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Error: unexpected changed output ❌"
+              exit 1
+              ;;
+          esac
+          echo "Validated local action ✅"
+
+      # Comparing HEAD against itself gives an empty diff on any event.
+      - name: "Running local action: explicit base"
+        id: explicit
+        uses: $/
+        with:
+          ecosystems: 'python'
+          patterns: |
+            .pre-commit-config.yaml
+          base: ${{ github.sha }}
+          output: 'reports/dependency-change.json'
+
+      - name: "Validated local action: explicit base"
+        shell: bash
+        env:
+          CHANGED: ${{ steps.explicit.outputs.changed }}
+          BASE: ${{ steps.explicit.outputs.base }}
+          MANIFEST: ${{ steps.explicit.outputs.manifest }}
+          EXPECTED_BASE: ${{ github.sha }}
+        run: |
+          # Explicit base validation
+          test "$CHANGED" = 'false' || { echo "Error: not false ❌"; exit 1; }
+          test "$BASE" = "$EXPECTED_BASE" || { echo "Error: base ❌"; exit 1; }
+          test "$MANIFEST" = 'reports/dependency-change.json' || exit 1
+          python3 - "$MANIFEST" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              sidecar = json.load(handle)
+          sys.exit(0 if sidecar["changed"] is False else 1)
+          PY
+          echo "Validated explicit base ✅"
+
+      # A base the checkout lacks is unresolved, and the run must remove
+      # the sidecar the previous step wrote.
+      - name: "Running local action: unresolved"
+        id: unresolved
+        uses: $/
+        with:
+          ecosystems: 'python'
+          base: 'no-such-commit'
+          output: 'reports/dependency-change.json'
+
+      - name: "Validated local action: unresolved"
+        shell: bash
+        env:
+          CHANGED: ${{ steps.unresolved.outputs.changed }}
+          REASON: ${{ steps.unresolved.outputs.reason }}
+          MANIFEST: ${{ steps.unresolved.outputs.manifest }}
+        run: |
+          # Unresolved validation
+          test -z "$CHANGED" || { echo "Error: changed not empty ❌"; exit 1; }
+          test -z "$MANIFEST" || { echo "Error: manifest not empty ❌"; exit 1; }
+          case "$REASON" in
+            'unresolved: no-such-commit is not in the checkout') ;;
+            *) echo "Error: unexpected reason '$REASON' ❌"; exit 1 ;;
+          esac
+          if [ -e 'reports/dependency-change.json' ]; then
+            echo "Error: stale sidecar survived an unresolved run ❌"
+            exit 1
+          fi
+          echo "Validated unresolved ✅"
 
       # yamllint disable-line rule:line-length
       - name: "Running local action: ${{ github.repository }} [Override Failure]"
@@ -78,7 +210,7 @@ jobs:
         id: failure
         continue-on-error: true
         with:
-          invalid_input: "Some garbage"
+          ecosystems: 'ruby'
 
       # Failure testing is also important
       - name: "Error if step above did NOT fail"
@@ -88,3 +220,127 @@ jobs:
           # Error if step above did NOT fail
           echo "Error: previous test step did NOT fail ❌"
           exit 1
+
+  ### End to end: the sidecar and the changed output drive grype's gate ###
+  e2e:
+    name: "End-to-end with grype-scan-action"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # Full history, so the repository's root commit is a usable base.
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Against the root commit every Python dependency file is new, so
+      # the result is a proven true.
+      - name: "Detect: changed=true"
+        id: detect-true
+        uses: $/
+        with:
+          ecosystems: 'python'
+          base: '5b9a6e226e3dfe52b15e74261b8f765cb14e02e8'
+          output: 'e2e/true/dependency-change.json'
+
+      # Each gate uploads its report; the names must differ or the
+      # second upload fails on the first one's artifact.
+      - name: "Gate: changed=true"
+        id: gate-true
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: 'tests/e2e/sbom-cyclonedx.json'
+          gate-when: 'dependencies-changed'
+          dependencies-changed: ${{ steps.detect-true.outputs.changed }}
+          dependency-change-manifest: 'e2e/true/dependency-change.json'
+          artifact-name: 'grype-e2e-true'
+
+      # HEAD against itself is an empty diff: a proven false.
+      - name: "Detect: changed=false"
+        id: detect-false
+        uses: $/
+        with:
+          ecosystems: 'python'
+          base: ${{ github.sha }}
+          output: 'e2e/false/dependency-change.json'
+
+      - name: "Gate: changed=false"
+        id: gate-false
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: 'tests/e2e/sbom-cyclonedx.json'
+          gate-when: 'dependencies-changed'
+          dependencies-changed: ${{ steps.detect-false.outputs.changed }}
+          dependency-change-manifest: 'e2e/false/dependency-change.json'
+          artifact-name: 'grype-e2e-false'
+
+      # A base the checkout lacks: unresolved, so changed is empty and
+      # the sidecar path names no file. The consumer must gate.
+      - name: "Detect: unresolved"
+        id: detect-unresolved
+        uses: $/
+        with:
+          ecosystems: 'python'
+          base: 'no-such-commit'
+          output: 'e2e/unresolved/dependency-change.json'
+
+      - name: "Gate: unresolved"
+        id: gate-unresolved
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@7b6b12b60de8ff051f2f8021439c1ef0b82b98c1  # v0.4.0
+        with:
+          sbom: 'tests/e2e/sbom-cyclonedx.json'
+          gate-when: 'dependencies-changed'
+          dependencies-changed: ${{ steps.detect-unresolved.outputs.changed }}
+          dependency-change-manifest: 'e2e/unresolved/dependency-change.json'
+          artifact-name: 'grype-e2e-unresolved'
+
+      - name: "Validated gate-active for true, false and unresolved"
+        shell: bash
+        env:
+          CHANGED_TRUE: ${{ steps.detect-true.outputs.changed }}
+          CHANGED_FALSE: ${{ steps.detect-false.outputs.changed }}
+          CHANGED_UNRESOLVED: ${{ steps.detect-unresolved.outputs.changed }}
+          GATE_TRUE: ${{ steps.gate-true.outputs.gate-active }}
+          GATE_FALSE: ${{ steps.gate-false.outputs.gate-active }}
+          GATE_UNRESOLVED: ${{ steps.gate-unresolved.outputs.gate-active }}
+        run: |
+          # End-to-end validation
+          fail() { echo "Error: $1 ❌"; exit 1; }
+          echo "changed: true='$CHANGED_TRUE' false='$CHANGED_FALSE'" \
+            "unresolved='$CHANGED_UNRESOLVED'"
+          echo "gate-active: true='$GATE_TRUE' false='$GATE_FALSE'" \
+            "unresolved='$GATE_UNRESOLVED'"
+          test "$CHANGED_TRUE" = 'true' || fail "expected changed=true"
+          test "$CHANGED_FALSE" = 'false' || fail "expected changed=false"
+          test -z "$CHANGED_UNRESOLVED" || fail "expected empty changed"
+          test -f 'e2e/true/dependency-change.json' || fail "no true sidecar"
+          test -f 'e2e/false/dependency-change.json' || fail "no false sidecar"
+          test ! -e 'e2e/unresolved/dependency-change.json' \
+            || fail "sidecar survived an unresolved run"
+          test "$GATE_TRUE" = 'true' || fail "gate inactive on changed=true"
+          test "$GATE_FALSE" = 'false' || fail "gate active on changed=false"
+          test "$GATE_UNRESOLVED" = 'true' || fail "gate inactive on unresolved"
+          echo "Validated end-to-end gate ✅"
