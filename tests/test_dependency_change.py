@@ -615,6 +615,30 @@ class MatchingTests(ActionTestCase):
         self.change("gradle/libs.versions.toml")
         self.assert_changed(self.run_action(self.repo, ecosystems="gradle"), True)
 
+    @unittest.expectedFailure
+    def test_maven_jvm_config_counts(self) -> None:
+        self.seed("src/Main.java")
+        self.change(".mvn/jvm.config")
+        self.assert_changed(self.run_action(self.repo, ecosystems="maven"), True)
+        self.change(".mvn/wrapper/maven-wrapper.properties")
+        self.assert_changed(self.run_action(self.repo, ecosystems="maven"), False)
+
+    @unittest.expectedFailure
+    def test_gradle_applied_scripts_count(self) -> None:
+        self.seed("src/Main.java")
+        for script in (
+            "dependencies.gradle",
+            "gradle/libs.gradle.kts",
+            "app/versions.gradle",
+        ):
+            with self.subTest(script=script):
+                self.change(script)
+                self.assert_changed(
+                    self.run_action(self.repo, ecosystems="gradle"), True
+                )
+        self.change("docs/build.gradle.md", "gradle.png")
+        self.assert_changed(self.run_action(self.repo, ecosystems="gradle"), False)
+
     def test_patterns_only_use(self) -> None:
         self.seed("src/app.js")
         self.change("deps/custom.lock")
