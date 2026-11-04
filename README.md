@@ -199,22 +199,23 @@ nothing.
 
 <!-- markdownlint-disable MD013 -->
 
-| Preset   | Patterns                                                                                                                                                                                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node`   | `package.json` `package-lock.json` `npm-shrinkwrap.json` `yarn.lock` `.yarnrc.yml` `pnpm-lock.yaml` `pnpm-workspace.yaml` `bun.lock` `bun.lockb`                                                                          |
-| `python` | `pyproject.toml` `uv.lock` `poetry.lock` `pdm.lock` `Pipfile` `Pipfile.lock` `setup.py` `setup.cfg` `requirements*.txt` `requirements/*.txt` `constraints*.txt` `tox.ini`                                                 |
-| `go`     | `go.mod` `go.sum` `go.work` `go.work.sum` `vendor/modules.txt`                                                                                                                                                            |
-| `maven`  | `pom.xml` `.mvn/extensions.xml` `.mvn/maven.config`                                                                                                                                                                       |
-| `gradle` | `build.gradle` `build.gradle.kts` `settings.gradle` `settings.gradle.kts` `gradle.properties` `gradle/*.versions.toml` `gradle.lockfile` `settings-gradle.lockfile` `gradle/dependency-locks/` `buildSrc/` `build-logic/` |
-| `rust`   | `Cargo.toml` `Cargo.lock` `.cargo/config.toml` `.cargo/config`                                                                                                                                                            |
-| `docker` | `Dockerfile` `Dockerfile.*` `*.Dockerfile` `Containerfile` `Containerfile.*` `*.dockerfile`                                                                                                                               |
+| Preset   | Patterns                                                                                                                                                                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node`   | `package.json` `package-lock.json` `npm-shrinkwrap.json` `yarn.lock` `.yarnrc.yml` `pnpm-lock.yaml` `pnpm-workspace.yaml` `bun.lock` `bun.lockb`                                                                                                    |
+| `python` | `pyproject.toml` `uv.lock` `poetry.lock` `pdm.lock` `Pipfile` `Pipfile.lock` `setup.py` `setup.cfg` `requirements*.txt` `requirements/*.txt` `constraints*.txt` `tox.ini`                                                                           |
+| `go`     | `go.mod` `go.sum` `go.work` `go.work.sum` `vendor/modules.txt`                                                                                                                                                                                      |
+| `maven`  | `pom.xml` `.mvn/extensions.xml` `.mvn/maven.config` `.mvn/jvm.config`                                                                                                                                                                               |
+| `gradle` | `build.gradle` `build.gradle.kts` `settings.gradle` `settings.gradle.kts` `*.gradle` `*.gradle.kts` `gradle.properties` `gradle/*.versions.toml` `gradle.lockfile` `settings-gradle.lockfile` `gradle/dependency-locks/` `buildSrc/` `build-logic/` |
+| `rust`   | `Cargo.toml` `Cargo.lock` `.cargo/config.toml` `.cargo/config`                                                                                                                                                                                      |
+| `docker` | `Dockerfile` `Dockerfile.*` `*.Dockerfile` `Containerfile` `Containerfile.*` `*.dockerfile`                                                                                                                                                         |
 
 <!-- markdownlint-enable MD013 -->
 
-`tox.ini`, `setup.cfg`, `gradle.properties`, `.mvn/maven.config` and
-Gradle's convention-plugin builds (`buildSrc/`, `build-logic/`) change
-for reasons unrelated to dependencies too; the presets include them at
-the cost of a strict run.
+`tox.ini`, `setup.cfg`, `gradle.properties`, `.mvn/maven.config`,
+`.mvn/jvm.config`, applied Gradle scripts (`*.gradle`, `*.gradle.kts`)
+and Gradle's convention-plugin builds (`buildSrc/`, `build-logic/`)
+change for reasons unrelated to dependencies too; the presets include
+them at the cost of a strict run.
 
 `docker` covers the image recipe alone. A Docker lane building a Python
 application combines presets (`ecosystems: docker,python`) and passes a

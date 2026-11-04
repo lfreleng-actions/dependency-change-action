@@ -38,12 +38,20 @@ PRESETS: Mapping[str, tuple[str, ...]] = {
         "tox.ini",
     ),
     "go": ("go.mod", "go.sum", "go.work", "go.work.sum", "vendor/modules.txt"),
-    "maven": ("pom.xml", ".mvn/extensions.xml", ".mvn/maven.config"),
+    "maven": (
+        "pom.xml",
+        ".mvn/extensions.xml",
+        ".mvn/maven.config",
+        ".mvn/jvm.config",
+    ),
     "gradle": (
         "build.gradle",
         "build.gradle.kts",
         "settings.gradle",
         "settings.gradle.kts",
+        # Scripts loaded with 'apply from:' commonly hold the versions.
+        "*.gradle",
+        "*.gradle.kts",
         "gradle.properties",
         "gradle/*.versions.toml",
         "gradle.lockfile",
