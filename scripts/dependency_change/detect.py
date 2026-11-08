@@ -21,6 +21,7 @@ from dependency_change.gitobjects import (
     has_promisor_remote,
     list_tree,
     resolve_commit,
+    using_git,
 )
 from dependency_change.inputs import Inputs
 from dependency_change.patterns import Pattern, compile_pattern
@@ -164,6 +165,12 @@ def reachable_entries(
 
 def detect(inputs: Inputs, env: Mapping[str, str]) -> Result:
     """Run the detection and return a resolved result, or raise ``Unresolved``."""
+    with using_git(inputs.git):
+        return compare(inputs, env)
+
+
+def compare(inputs: Inputs, env: Mapping[str, str]) -> Result:
+    """Compare the base against ``HEAD`` with the git ``detect`` chose."""
     prefix = inputs.path_prefix
     guard_prefix_inside_repository(prefix)
     if has_promisor_remote():

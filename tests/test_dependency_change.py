@@ -12,6 +12,7 @@ import importlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -208,6 +209,7 @@ class ActionTestCase(unittest.TestCase):
         base: str = "",
         gerrit: str = "",
         output: str | bytes = "dependency-change.json",
+        git: str = "",
         env: Mapping[str, str] | None = None,
     ) -> Outcome:
         output_file = self.tmp / "github_output"
@@ -224,6 +226,7 @@ class ActionTestCase(unittest.TestCase):
             "INPUT_GERRIT_REFSPEC": gerrit,
             "INPUT_BASE": base,
             "INPUT_OUTPUT": output_text,
+            "INPUT_GIT": git,
             "GITHUB_EVENT_NAME": event,
             "GITHUB_SHA": repo.head() if github_sha is None else github_sha,
             "EVENT_BEFORE": before,
@@ -1337,6 +1340,140 @@ class SidecarTests(ActionTestCase):
         with mock.patch.object(os, "supports_dir_fd", frozenset[object]()):
             outcome = self.run_action(self.repo)
         self.assert_input_error(outcome, "directory descriptor")
+
+
+class TrustedGitTests(ActionTestCase):
+    """Git runs from the ``git`` input, with no caller ``GIT_*`` settings."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        real = shutil.which("git")
+        assert real is not None
+        self.real_git = os.path.realpath(real)
+
+    def script(self, name: str, body: str, mode: int = 0o755) -> Path:
+        """Write a shell script outside the repository and return its path."""
+        path = self.tmp / "bin" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    def test_replace_ref_cannot_empty_the_change(self) -> None:
+        first = self.seed("package.json")
+        self.repo.write("package.json", b"two\n")
+        head = self.repo.commit("two")
+        tree = self.repo.git("rev-parse", f"{first}^{{tree}}")
+        forged = self.repo.git("commit-tree", tree, "-p", first, "-m", "two")
+        self.repo.git("replace", head, forged)
+        self.assert_changed(self.run_action(self.repo, github_sha=head), True)
+
+    def test_grafts_file_cannot_move_the_base(self) -> None:
+        first = self.seed("package.json", "src/app.js")
+        self.repo.write("package.json", b"two\n")
+        parent = self.repo.commit("two")
+        self.repo.write("src/app.js", b"three\n")
+        head = self.repo.commit("three")
+        grafts = self.repo.path / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(f"{head} {first}\n", encoding="utf-8")
+        outcome = self.run_action(self.repo)
+        self.assert_changed(outcome, False)
+        self.assertEqual(outcome.outputs["base"], parent)
+
+    def test_caller_git_dir_is_ignored(self) -> None:
+        self.commit_two()
+        head = self.repo.head()
+        other = GitRepo(self.tmp / "other")
+        other.write("README.md")
+        other.commit("other")
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other.path / ".git")}):
+            outcome = self.run_action(self.repo, github_sha=head)
+        self.assert_changed(outcome, True)
+
+    def test_git_environment_drops_caller_git_variables(self) -> None:
+        caller = {
+            "GIT_DIR": "/elsewhere",
+            "GIT_OBJECT_DIRECTORY": "/elsewhere/objects",
+            "GIT_NO_REPLACE_OBJECTS": "0",
+            "HOME": "/home/caller",
+        }
+        with mock.patch.dict(os.environ, caller):
+            environment = gitobjects.git_environment()
+        self.assertNotIn("GIT_DIR", environment)
+        self.assertNotIn("GIT_OBJECT_DIRECTORY", environment)
+        self.assertEqual(environment["HOME"], "/home/caller")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_GRAFT_FILE"], os.devnull)
+
+    def test_git_input_is_what_runs(self) -> None:
+        self.commit_two()
+        empty_diff = self.script(
+            "empty-diff-git",
+            f'[ "$1" = diff ] && exit 0\nexec "{self.real_git}" "$@"',
+        )
+        self.assert_changed(self.run_action(self.repo, git=str(empty_diff)), False)
+
+    def test_relative_git_fails(self) -> None:
+        self.commit_two()
+        self.assert_input_error(
+            self.run_action(self.repo, git="git"), "git 'git' is not an absolute path"
+        )
+
+    def test_unusable_git_fails(self) -> None:
+        self.commit_two()
+        not_executable = self.script("not-executable", "exit 0", mode=0o644)
+        link_to_directory = self.tmp / "bin" / "directory-link"
+        link_to_directory.symlink_to(self.tmp)
+        for path in (
+            not_executable,
+            self.tmp / "missing",
+            self.tmp,
+            link_to_directory,
+        ):
+            with self.subTest(path=path):
+                self.assert_input_error(
+                    self.run_action(self.repo, git=str(path)),
+                    "is not an executable file",
+                )
+
+    def test_absolute_git_through_a_link_resolves(self) -> None:
+        self.commit_two()
+        link = self.tmp / "git-link"
+        link.symlink_to(self.real_git)
+        self.assert_changed(self.run_action(self.repo, git=str(link)), True)
+
+    def test_clean_absolute_git_resolves(self) -> None:
+        self.commit_two()
+        self.assert_changed(self.run_action(self.repo, git=self.real_git), True)
+
+    def test_git_with_surrounding_whitespace_fails(self) -> None:
+        # The input is used exactly as given, never trimmed, so a stray
+        # space or newline fails loudly instead of selecting another file.
+        self.commit_two()
+        body = f'exec "{self.real_git}" "$@"'
+        trimmed = self.script("exact-git", body)
+        self.script("exact-git ", body)
+        for value in (f"{trimmed} ", f"{trimmed}\n", f" {trimmed}"):
+            with self.subTest(value=value):
+                self.assert_input_error(
+                    self.run_action(self.repo, git=value),
+                    "has leading or trailing whitespace",
+                )
+
+    def test_empty_git_runs_the_first_git_on_path(self) -> None:
+        # The default keeps the PATH lookup, so a git earlier on PATH runs;
+        # callers that cannot trust PATH pass the git input.
+        self.commit_two()
+        head = self.repo.head()
+        marker = self.tmp / "fake-git-ran"
+        fake = self.script("git", f'touch "{marker}"\nexec "{self.real_git}" "$@"')
+        path = f"{fake.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            outcome = self.run_action(self.repo, github_sha=head)
+        self.assert_changed(outcome, True)
+        self.assertTrue(marker.exists(), "the git on PATH did not run")
 
 
 class InputTests(ActionTestCase):

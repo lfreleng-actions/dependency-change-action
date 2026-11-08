@@ -70,6 +70,7 @@ the parent of the checked-out commit is present.
 | `gerrit-refspec` | No       | `''`                     | Set on Gerrit-triggered runs; the checkout is then the change itself                                                 |
 | `base`           | No       | `''`                     | Explicit base commit, overriding event detection; a commit the checkout lacks gives an unresolved result             |
 | `output`         | No       | `dependency-change.json` | Sidecar path, relative to the working directory; a resolved result writes it, an unresolved one does not             |
+| `git`            | No       | `''`                     | Absolute git executable path, untrimmed; empty finds `git` on `PATH`. Anything but an executable file fails the step |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -149,6 +150,36 @@ promisor remote has nothing to fetch and runs on any git.
    remove after a failed write, does.
 5. It logs one line per matched file and a final verdict, with paths
    escaped so that a file name cannot forge a workflow command.
+
+## The trust boundary
+
+The detector runs git with an environment of its own, so the job around
+it cannot change what git reports:
+
+- With the `git` input set, it runs that executable and never looks
+  `git` up on `PATH`. The path must be absolute and, after resolving
+  symbolic links, name an executable regular file; the resolved path is
+  what runs. The value is never trimmed: leading or trailing
+  whitespace, such as the newline a YAML block scalar leaves, is an
+  input error, as is any other value that breaks these rules; either
+  fails the step.
+- It removes every `GIT_*` variable the caller set, such as `GIT_DIR`,
+  `GIT_OBJECT_DIRECTORY` or `GIT_ALTERNATE_OBJECT_DIRECTORIES`, which
+  would point git at another repository or other objects. The rest of
+  the environment stays, `HOME` included, so system and global
+  configuration such as `safe.directory` still apply.
+- It sets `GIT_NO_REPLACE_OBJECTS=1`, so a replace ref planted in the
+  clone cannot swap a dependency commit for one with an unchanged tree.
+- It sets `GIT_GRAFT_FILE` to the null device, so a `.git/info/grafts`
+  file cannot reparent `HEAD` and move the base.
+
+It cannot defend against an earlier step in the same job that runs
+untrusted code: such a step can replace git itself or rewrite the
+clone. Run the detector before any step that executes code from the
+change under review. When anything before the detector could change
+`PATH`, such as a step that adds a directory from the checkout, pass
+`git` as an absolute path, for example `/usr/bin/git`. Left empty, the
+first `git` on `PATH` runs, as it did before the input existed.
 
 ## Patterns
 
@@ -241,8 +272,9 @@ behind.
 
 Run the tests with `python3 -m unittest discover -s tests`. They build
 real git repositories in temporary directories, and
-`tests/test_mutation.py` disables each fail-closed guard in turn to
-check that a test notices.
+`tests/test_mutation.py` disables each fail-closed guard, each setting
+in git's environment and the `GIT_*` filter in turn to check that a
+test notices.
 
 [pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/dependency-change-action/main
 [pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/dependency-change-action/main.svg

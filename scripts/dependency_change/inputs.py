@@ -11,6 +11,7 @@ import posixpath
 from collections.abc import Mapping
 
 from dependency_change.common import InputError, display, to_bytes
+from dependency_change.gitobjects import GIT_ON_PATH
 from dependency_change.patterns import PRESETS, validate_pattern
 
 
@@ -53,6 +54,29 @@ def normalise_output(raw: bytes) -> tuple[bytes, tuple[bytes, ...]]:
     return normalised, tuple(relative.split(b"/"))
 
 
+def resolve_git(raw: str) -> str:
+    """Validate the ``git`` input and return the executable to run.
+
+    Empty keeps the PATH lookup. Anything else must be an absolute path
+    that, after resolving symbolic links, is an executable regular file;
+    the resolved path is what runs, so a link swapped later is not. The
+    value is never trimmed: surrounding whitespace is an error, so a stray
+    space or newline cannot select a different file.
+    """
+    if raw != raw.strip():
+        raise InputError(
+            f"git '{display(to_bytes(raw))}' has leading or trailing whitespace"
+        )
+    if not raw:
+        return GIT_ON_PATH
+    if not os.path.isabs(raw):
+        raise InputError(f"git '{display(to_bytes(raw))}' is not an absolute path")
+    resolved = os.path.realpath(raw)
+    if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        raise InputError(f"git '{display(to_bytes(raw))}' is not an executable file")
+    return resolved
+
+
 def read_patterns(env: Mapping[str, str]) -> tuple[bytes, ...]:
     """Collect the preset and extra patterns, validated and without duplicates."""
     patterns: list[bytes] = []
@@ -87,6 +111,7 @@ class Inputs:
     base: str
     output: bytes
     output_components: tuple[bytes, ...]
+    git: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Inputs:
@@ -104,4 +129,5 @@ class Inputs:
             base=base,
             output=output,
             output_components=components,
+            git=resolve_git(env.get("INPUT_GIT", "")),
         )

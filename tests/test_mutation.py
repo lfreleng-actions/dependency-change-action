@@ -6,7 +6,8 @@
 Each guard in ``dependency_change.GUARDS`` is replaced with a function that
 returns without raising, while the module is otherwise intact, and the test
 aimed at that guard is run. A guard whose test still passes is not being
-tested.
+tested. The same holds for each setting in git's environment and for the
+filter that drops the caller's ``GIT_*`` variables.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dependency_change as dc  # noqa: E402
 import test_dependency_change as suite  # noqa: E402
+from dependency_change import gitobjects  # noqa: E402
 
 TARGETS: dict[str, str] = {
     "guard_git_refuses_lazy_fetch": "BaseSelectionTests.test_partial_clone_on_old_git_is_unresolved",
@@ -36,6 +38,14 @@ TARGETS: dict[str, str] = {
     "remove_sidecar": "SidecarTests.test_planted_sidecar_is_removed",
     "remove_partial": "SidecarTests.test_failed_cleanup_after_failed_write_fails_the_step",
 }
+
+# Each setting git runs with, by the test that notices it is missing.
+SETTING_TARGETS: dict[str, str] = {
+    "GIT_NO_LAZY_FETCH": "BaseSelectionTests.test_partial_clone_with_base_tree_missing_is_unresolved",
+    "GIT_NO_REPLACE_OBJECTS": "TrustedGitTests.test_replace_ref_cannot_empty_the_change",
+    "GIT_GRAFT_FILE": "TrustedGitTests.test_grafts_file_cannot_move_the_base",
+}
+FILTER_TARGET = "TrustedGitTests.test_caller_git_dir_is_ignored"
 
 
 def disabled(*_args: object, **_kwargs: object) -> None:
@@ -58,8 +68,11 @@ class MutationTests(unittest.TestCase):
     def test_every_guard_has_a_target(self) -> None:
         self.assertEqual(set(TARGETS), set(dc.GUARDS))
 
+    def test_every_setting_has_a_target(self) -> None:
+        self.assertEqual(set(SETTING_TARGETS), set(gitobjects.GIT_SETTINGS))
+
     def test_targets_pass_with_guards_intact(self) -> None:
-        for name in TARGETS.values():
+        for name in [*TARGETS.values(), *SETTING_TARGETS.values(), FILTER_TARGET]:
             with self.subTest(test=name):
                 result = run_target(name)
                 self.assertEqual(result.testsRun, 1)
@@ -75,6 +88,28 @@ class MutationTests(unittest.TestCase):
                     result.wasSuccessful(),
                     f"{name} did not notice {guard} being disabled",
                 )
+
+    def test_dropping_a_setting_fails_its_target(self) -> None:
+        for setting, name in SETTING_TARGETS.items():
+            with (
+                self.subTest(setting=setting),
+                mock.patch.dict(gitobjects.GIT_SETTINGS),
+            ):
+                del gitobjects.GIT_SETTINGS[setting]
+                result = run_target(name)
+                self.assertEqual(result.testsRun, 1)
+                self.assertFalse(
+                    result.wasSuccessful(), f"{name} did not notice {setting} missing"
+                )
+
+    def test_keeping_caller_git_variables_fails_its_target(self) -> None:
+        with mock.patch.object(gitobjects, "without_git_variables", dict):
+            result = run_target(FILTER_TARGET)
+        self.assertEqual(result.testsRun, 1)
+        self.assertFalse(
+            result.wasSuccessful(),
+            f"{FILTER_TARGET} did not notice caller GIT_* variables kept",
+        )
 
 
 if __name__ == "__main__":
