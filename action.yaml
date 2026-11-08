@@ -38,6 +38,11 @@ inputs:
     description: "Sidecar path, written only when the result is resolved"
     required: false
     default: "dependency-change.json"
+  git:
+    description: >-
+      Absolute path of the git executable; empty finds git on PATH
+    required: false
+    default: ""
 
 outputs:
   changed:
@@ -66,6 +71,7 @@ runs:
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_GIT: ${{ inputs.git }}
         EVENT_BEFORE: ${{ github.event.before }}
       run: |
         # Detect dependency changes

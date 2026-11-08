@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import dataclasses
 import os
 import re
 import subprocess
+from collections.abc import Generator, Mapping
 
 from dependency_change.common import Unresolved, display
 
@@ -23,21 +26,62 @@ MIN_NO_LAZY_FETCH_GIT: tuple[int, ...] = (2, 46)
 FALSE_VALUES = frozenset((b"", b"false", b"no", b"off", b"0"))
 
 
+# Settings every git command runs with, over a caller environment that
+# has lost its own GIT_* variables.
+#
+# A partial clone fetches a missing object from its promisor remote the
+# moment a command needs it, so ls-tree or diff on an absent tree would
+# go to the network with whatever credential the checkout kept.
+# GIT_NO_LAZY_FETCH (git 2.46) makes such a command fail instead, and the
+# failure is an unresolved result like any other missing object.
+#
+# A replace ref in the clone can swap a dependency commit for one with
+# its parent's tree, and a grafts file can reparent HEAD so HEAD^1 is
+# another commit; either hides the change. GIT_NO_REPLACE_OBJECTS stops
+# the first and pointing GIT_GRAFT_FILE at the null device the second.
+GIT_SETTINGS: dict[str, str] = {
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_GRAFT_FILE": os.devnull,
+}
+# The git to run: the caller's absolute path, or a PATH lookup by default.
+GIT_ON_PATH = "git"
+EXECUTABLE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "git_executable", default=GIT_ON_PATH
+)
+
+
+def without_git_variables(env: Mapping[str, str]) -> dict[str, str]:
+    """Copy ``env`` without any ``GIT_*`` variable an earlier step could set.
+
+    GIT_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and
+    their kin point git at another repository or other objects.
+    """
+    return {name: value for name, value in env.items() if not name.startswith("GIT_")}
+
+
 def git_environment() -> dict[str, str]:
     """The environment every git subprocess runs with.
 
-    A partial clone fetches a missing object from its promisor remote the
-    moment a command needs it, so ls-tree or diff on an absent tree would
-    go to the network with whatever credential the checkout kept.
-    GIT_NO_LAZY_FETCH (git 2.46) makes such a command fail instead, and the
-    failure is an unresolved result like any other missing object.
+    The rest of the caller's environment stays, ``HOME`` included, so
+    system and global configuration such as ``safe.directory`` apply.
     """
-    return {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    return {**without_git_variables(os.environ), **GIT_SETTINGS}
+
+
+@contextlib.contextmanager
+def using_git(executable: str) -> Generator[None, None, None]:
+    """Run every git command inside the block with ``executable``."""
+    token = EXECUTABLE.set(executable)
+    try:
+        yield
+    finally:
+        EXECUTABLE.reset(token)
 
 
 def git(*args: bytes | str) -> bytes:
     """Run one git command and return its stdout; any failure is ``Unresolved``."""
-    command: list[bytes | str] = ["git", *args]
+    command: list[bytes | str] = [EXECUTABLE.get(), *args]
     try:
         completed = subprocess.run(
             command,
@@ -75,7 +119,7 @@ def parse_git_version(raw: bytes) -> GitVersion:
 
 
 def git_version() -> GitVersion:
-    """The version of the git on the PATH."""
+    """The version of the git the detector runs."""
     return parse_git_version(git("--version"))
 
 

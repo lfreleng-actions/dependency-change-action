@@ -1359,7 +1359,6 @@ class TrustedGitTests(ActionTestCase):
         path.chmod(mode)
         return path
 
-    @unittest.expectedFailure
     def test_replace_ref_cannot_empty_the_change(self) -> None:
         first = self.seed("package.json")
         self.repo.write("package.json", b"two\n")
@@ -1369,7 +1368,6 @@ class TrustedGitTests(ActionTestCase):
         self.repo.git("replace", head, forged)
         self.assert_changed(self.run_action(self.repo, github_sha=head), True)
 
-    @unittest.expectedFailure
     def test_grafts_file_cannot_move_the_base(self) -> None:
         first = self.seed("package.json", "src/app.js")
         self.repo.write("package.json", b"two\n")
@@ -1383,7 +1381,6 @@ class TrustedGitTests(ActionTestCase):
         self.assert_changed(outcome, False)
         self.assertEqual(outcome.outputs["base"], parent)
 
-    @unittest.expectedFailure
     def test_caller_git_dir_is_ignored(self) -> None:
         self.commit_two()
         head = self.repo.head()
@@ -1394,7 +1391,6 @@ class TrustedGitTests(ActionTestCase):
             outcome = self.run_action(self.repo, github_sha=head)
         self.assert_changed(outcome, True)
 
-    @unittest.expectedFailure
     def test_git_environment_drops_caller_git_variables(self) -> None:
         caller = {
             "GIT_DIR": "/elsewhere",
@@ -1411,7 +1407,6 @@ class TrustedGitTests(ActionTestCase):
         self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertEqual(environment["GIT_GRAFT_FILE"], os.devnull)
 
-    @unittest.expectedFailure
     def test_git_input_is_what_runs(self) -> None:
         self.commit_two()
         empty_diff = self.script(
@@ -1420,14 +1415,12 @@ class TrustedGitTests(ActionTestCase):
         )
         self.assert_changed(self.run_action(self.repo, git=str(empty_diff)), False)
 
-    @unittest.expectedFailure
     def test_relative_git_fails(self) -> None:
         self.commit_two()
         self.assert_input_error(
             self.run_action(self.repo, git="git"), "git 'git' is not an absolute path"
         )
 
-    @unittest.expectedFailure
     def test_unusable_git_fails(self) -> None:
         self.commit_two()
         not_executable = self.script("not-executable", "exit 0", mode=0o644)
@@ -1455,7 +1448,6 @@ class TrustedGitTests(ActionTestCase):
         self.commit_two()
         self.assert_changed(self.run_action(self.repo, git=self.real_git), True)
 
-    @unittest.expectedFailure
     def test_git_with_surrounding_whitespace_fails(self) -> None:
         # The input is used exactly as given, never trimmed, so a stray
         # space or newline fails loudly instead of selecting another file.
