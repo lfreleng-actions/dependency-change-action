@@ -84,6 +84,17 @@ class GitRepo:
         full.write_bytes(content)
         self.add(relative)
 
+    def stage(self, relative: bytes, content: bytes = b"content\n") -> None:
+        # Index only: some filesystems (APFS) refuse names that are not UTF-8.
+        blob = self.git("hash-object", "-w", "--stdin", stdin=content)
+        self.git(
+            "update-index",
+            "--add",
+            "-z",
+            "--index-info",
+            stdin=b"100644 " + blob.encode() + b"\t" + relative + b"\0",
+        )
+
     def remove(self, relative: str) -> None:
         self.git("rm", "-q", "--", relative)
 
@@ -1340,6 +1351,101 @@ class SidecarTests(ActionTestCase):
         with mock.patch.object(os, "supports_dir_fd", frozenset[object]()):
             outcome = self.run_action(self.repo)
         self.assert_input_error(outcome, "directory descriptor")
+
+
+class ChangedPathsTests(ActionTestCase):
+    """The ``changed-paths`` output and the sidecar's ``changed_paths``."""
+
+    def changed_paths(self, outcome: Outcome) -> object:
+        value = outcome.outputs["changed-paths"]
+        self.assertNotIn("\n", value)
+        self.assertEqual(value, value.strip())
+        return json.loads(value)
+
+    @unittest.expectedFailure
+    def test_every_changed_path_is_reported_sorted(self) -> None:
+        self.seed("package.json", "src/app.js", "docs/readme.md")
+        self.repo.write("src/app.js", b"two\n")
+        self.repo.write("package.json", b"two\n")
+        self.repo.write("a/new.txt")
+        self.repo.remove("docs/readme.md")
+        self.repo.commit("change")
+        outcome = self.run_action(self.repo)
+        self.assert_changed(outcome, True)
+        expected = ["a/new.txt", "docs/readme.md", "package.json", "src/app.js"]
+        self.assertEqual(self.changed_paths(outcome), expected)
+        self.assertEqual(
+            outcome.outputs["changed-paths"],
+            json.dumps(expected, separators=(",", ":")),
+        )
+        assert outcome.sidecar is not None
+        self.assertEqual(outcome.sidecar["files"], ["package.json"])
+        self.assertEqual(outcome.sidecar["changed_paths"], expected)
+        self.assertEqual(outcome.sidecar["schema"], 1)
+
+    @unittest.expectedFailure
+    def test_change_outside_prefix_is_reported(self) -> None:
+        self.seed("app/package.json", "other/package.json", "README.md")
+        self.repo.write("other/package.json", b"two\n")
+        self.repo.write("README.md", b"two\n")
+        self.repo.commit("change")
+        outcome = self.run_action(self.repo, prefix="app")
+        self.assert_changed(outcome, False)
+        self.assertEqual(
+            self.changed_paths(outcome), ["README.md", "other/package.json"]
+        )
+
+    @unittest.expectedFailure
+    def test_change_touching_nothing_is_an_empty_array(self) -> None:
+        self.seed("package.json")
+        self.repo.commit("empty")
+        outcome = self.run_action(self.repo)
+        self.assert_changed(outcome, False)
+        self.assertEqual(outcome.outputs["changed-paths"], "[]")
+        assert outcome.sidecar is not None
+        self.assertEqual(outcome.sidecar["changed_paths"], [])
+
+    @unittest.expectedFailure
+    def test_unresolved_result_leaves_changed_paths_empty(self) -> None:
+        self.commit_two()
+        outcome = self.run_action(self.repo, event="schedule")
+        self.assert_unresolved(outcome, "event 'schedule'")
+        self.assertEqual(outcome.outputs["changed-paths"], "")
+
+    @unittest.expectedFailure
+    def test_path_not_utf8_leaves_changed_paths_empty(self) -> None:
+        self.seed("src/app.js")
+        self.repo.stage(b"latin\xe9/x.txt")
+        self.repo.write("package.json")
+        self.repo.commit("change")
+        outcome = self.run_action(self.repo)
+        self.assert_changed(outcome, True)
+        self.assertEqual(outcome.outputs["changed-paths"], "")
+        notices = [
+            line for line in outcome.log.splitlines() if line.startswith("::notice::")
+        ]
+        self.assertEqual(len(notices), 1, outcome.log)
+        self.assertIn("UTF-8", notices[0])
+        assert outcome.sidecar is not None
+        self.assertEqual(outcome.sidecar["files"], ["package.json"])
+        self.assertEqual(
+            outcome.sidecar["changed_paths"], ["latin\udce9/x.txt", "package.json"]
+        )
+
+    @unittest.expectedFailure
+    def test_path_cannot_add_a_further_output(self) -> None:
+        self.seed("src/app.js")
+        paths = ["x\nchanged=false", "y=1\nchanged-paths<<EOF\n[]\nEOF"]
+        for path in paths:
+            self.repo.write(path)
+        self.repo.commit("change")
+        outcome = self.run_action(self.repo)
+        self.assertEqual(
+            set(outcome.outputs),
+            {"changed", "reason", "base", "manifest", "changed-paths"},
+        )
+        self.assertEqual(outcome.outputs["changed"], "false")
+        self.assertEqual(self.changed_paths(outcome), sorted(paths))
 
 
 class TrustedGitTests(ActionTestCase):
