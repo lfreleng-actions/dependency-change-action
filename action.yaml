@@ -57,6 +57,10 @@ outputs:
   manifest:
     description: "Path to the sidecar; empty when unresolved"
     value: ${{ steps.detect.outputs.manifest }}
+  changed-paths:
+    description: >-
+      Every changed path as a compact JSON array; empty when unresolved
+    value: ${{ steps.detect.outputs.changed-paths }}
 
 runs:
   using: "composite"

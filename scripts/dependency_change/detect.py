@@ -37,6 +37,7 @@ class Result:
     base: bytes
     reason: str
     files: tuple[bytes, ...]
+    changed_paths: tuple[bytes, ...]
 
 
 def guard_git_refuses_lazy_fetch(version: GitVersion) -> None:
@@ -210,4 +211,6 @@ def compare(inputs: Inputs, env: Mapping[str, str]) -> Result:
         reason = f"{len(matched)} dependency {noun} changed since {short}"
     else:
         reason = f"no dependency file changed since {short}"
-    return Result(bool(matched), base, reason, tuple(matched))
+    return Result(
+        bool(matched), base, reason, tuple(matched), tuple(sorted(changed_paths))
+    )
