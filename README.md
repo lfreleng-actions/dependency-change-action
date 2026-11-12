@@ -85,12 +85,13 @@ step otherwise.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name       | Description                                                                                                                 |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `changed`  | `true`, `false`, or **empty** when unresolved, so it can feed `grype-scan-action`'s `dependencies-changed` directly         |
-| `reason`   | One line saying why, such as `2 dependency files changed since a1b2c3d4e5f6` or `unresolved: HEAD^1 is not in the checkout` |
-| `base`     | The base commit compared against; empty when unresolved                                                                     |
-| `manifest` | Path to the sidecar; empty when unresolved                                                                                  |
+| Name            | Description                                                                                                                 |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `changed`       | `true`, `false`, or **empty** when unresolved, so it can feed `grype-scan-action`'s `dependencies-changed` directly         |
+| `reason`        | One line saying why, such as `2 dependency files changed since a1b2c3d4e5f6` or `unresolved: HEAD^1 is not in the checkout` |
+| `base`          | The base commit compared against; empty when unresolved                                                                     |
+| `manifest`      | Path to the sidecar; empty when unresolved                                                                                  |
+| `changed-paths` | Every path the change touched, as a compact JSON array; `[]` when nothing changed, **empty** when unresolved                |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -98,8 +99,21 @@ step otherwise.
 unknown: `grype-scan-action` rejects any non-empty value other than
 `true` or `false`.
 
-The sidecar is a JSON document with `changed`, `base`, `reason` and the
-list of matched `files`.
+`changed-paths` lists every path in the diff between the base and
+`HEAD`, sorted, relative to the repository root with `/` separators. It
+includes paths no pattern matched and paths outside `path-prefix`, in
+the form `docker-build-matrix-action`'s `changed_files` input takes.
+Like `changed`, it stays empty when the action cannot resolve the
+result, so a consumer can tell "nothing changed" (`[]`) from "unknown"
+(empty). JSON cannot carry a path that does not decode as UTF-8, so such
+a path leaves `changed-paths` empty with a `::notice::`, while `changed`
+and the sidecar report as usual.
+
+The sidecar is a JSON document with `schema` (1), `changed`, `base`,
+`reason`, the list of matched `files` and the list of every changed path
+in `changed_paths`. Both lists decode a path that is not valid UTF-8
+with `surrogateescape`. Adding `changed_paths` left `schema` at 1, since
+a reader of the other keys sees no difference.
 
 ## Choosing the base
 
@@ -149,7 +163,9 @@ promisor remote has nothing to fetch and runs on any git.
    invalid input, or a sidecar it cannot clear before detection or
    remove after a failed write, does.
 5. It logs one line per matched file and a final verdict, with paths
-   escaped so that a file name cannot forge a workflow command.
+   escaped so that a file name cannot forge a workflow command. Every
+   output goes to `GITHUB_OUTPUT` with a random delimiter, so a path
+   cannot add a further output.
 
 ## The trust boundary
 

@@ -285,6 +285,7 @@ class ActionTestCase(unittest.TestCase):
         self.assertEqual(outcome.outputs["changed"], "")
         self.assertEqual(outcome.outputs["base"], "")
         self.assertEqual(outcome.outputs["manifest"], "")
+        self.assertEqual(outcome.outputs["changed-paths"], "")
         self.assertTrue(
             outcome.outputs["reason"].startswith("unresolved: "),
             outcome.outputs["reason"],
@@ -295,6 +296,7 @@ class ActionTestCase(unittest.TestCase):
     def assert_input_error(self, outcome: Outcome, fragment: str) -> None:
         self.assertEqual(outcome.exit_code, 1, outcome.log)
         self.assertEqual(outcome.outputs["changed"], "")
+        self.assertEqual(outcome.outputs["changed-paths"], "")
         self.assertIn(fragment, outcome.log)
         self.assertIsNone(outcome.sidecar)
 
@@ -1362,7 +1364,6 @@ class ChangedPathsTests(ActionTestCase):
         self.assertEqual(value, value.strip())
         return json.loads(value)
 
-    @unittest.expectedFailure
     def test_every_changed_path_is_reported_sorted(self) -> None:
         self.seed("package.json", "src/app.js", "docs/readme.md")
         self.repo.write("src/app.js", b"two\n")
@@ -1383,7 +1384,6 @@ class ChangedPathsTests(ActionTestCase):
         self.assertEqual(outcome.sidecar["changed_paths"], expected)
         self.assertEqual(outcome.sidecar["schema"], 1)
 
-    @unittest.expectedFailure
     def test_change_outside_prefix_is_reported(self) -> None:
         self.seed("app/package.json", "other/package.json", "README.md")
         self.repo.write("other/package.json", b"two\n")
@@ -1395,7 +1395,6 @@ class ChangedPathsTests(ActionTestCase):
             self.changed_paths(outcome), ["README.md", "other/package.json"]
         )
 
-    @unittest.expectedFailure
     def test_change_touching_nothing_is_an_empty_array(self) -> None:
         self.seed("package.json")
         self.repo.commit("empty")
@@ -1405,14 +1404,12 @@ class ChangedPathsTests(ActionTestCase):
         assert outcome.sidecar is not None
         self.assertEqual(outcome.sidecar["changed_paths"], [])
 
-    @unittest.expectedFailure
     def test_unresolved_result_leaves_changed_paths_empty(self) -> None:
         self.commit_two()
         outcome = self.run_action(self.repo, event="schedule")
         self.assert_unresolved(outcome, "event 'schedule'")
         self.assertEqual(outcome.outputs["changed-paths"], "")
 
-    @unittest.expectedFailure
     def test_path_not_utf8_leaves_changed_paths_empty(self) -> None:
         self.seed("src/app.js")
         self.repo.stage(b"latin\xe9/x.txt")
@@ -1432,7 +1429,6 @@ class ChangedPathsTests(ActionTestCase):
             outcome.sidecar["changed_paths"], ["latin\udce9/x.txt", "package.json"]
         )
 
-    @unittest.expectedFailure
     def test_path_cannot_add_a_further_output(self) -> None:
         self.seed("src/app.js")
         paths = ["x\nchanged=false", "y=1\nchanged-paths<<EOF\n[]\nEOF"]
@@ -1621,7 +1617,14 @@ class InputTests(ActionTestCase):
         self.seed("package.json")
         outcome = self.run_action(self.repo, ecosystems="ruby")
         self.assertEqual(
-            outcome.outputs, {"changed": "", "reason": "", "base": "", "manifest": ""}
+            outcome.outputs,
+            {
+                "changed": "",
+                "reason": "",
+                "base": "",
+                "manifest": "",
+                "changed-paths": "",
+            },
         )
 
 

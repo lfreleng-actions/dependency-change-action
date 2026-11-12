@@ -131,6 +131,9 @@ def write_sidecar(components: Sequence[bytes], result: Result) -> None:
         "base": result.base.decode("ascii"),
         "reason": result.reason,
         "files": [path.decode("utf-8", "surrogateescape") for path in result.files],
+        "changed_paths": [
+            path.decode("utf-8", "surrogateescape") for path in result.changed_paths
+        ],
     }
     fd = walk_output(components, create=True)
     if fd is None:

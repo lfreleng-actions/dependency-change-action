@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from dependency_change.common import InputError, Unresolved, display, log, to_bytes
 from dependency_change.detect import detect
@@ -31,7 +32,21 @@ GUARDS: Mapping[str, str] = {
     "remove_partial": "dependency_change.sidecar",
 }
 
-OUTPUT_NAMES = ("changed", "reason", "base", "manifest")
+OUTPUT_NAMES = ("changed", "reason", "base", "manifest", "changed-paths")
+
+
+def changed_paths_json(paths: Sequence[bytes]) -> bytes:
+    """Render ``paths`` as a compact JSON array, or empty when one is not UTF-8.
+
+    A path that does not decode cannot be represented faithfully, so the
+    output is left unresolved rather than carrying a mangled name.
+    """
+    try:
+        names = [path.decode("utf-8") for path in paths]
+    except UnicodeDecodeError:
+        log("::notice::changed-paths is empty: a changed path is not valid UTF-8")
+        return b""
+    return json.dumps(names, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def write_outputs(env: Mapping[str, str], values: Mapping[str, bytes]) -> None:
@@ -95,6 +110,7 @@ def run(env: Mapping[str, str]) -> int:
         outputs["reason"] = to_bytes(result.reason)
         outputs["base"] = result.base
         outputs["manifest"] = inputs.output
+        outputs["changed-paths"] = changed_paths_json(result.changed_paths)
         log(
             f"dependency change: changed={outputs['changed'].decode()} ({result.reason})"
         )
