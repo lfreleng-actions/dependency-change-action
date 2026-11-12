@@ -268,7 +268,7 @@ jobs:
       - name: "Gate: changed=true"
         id: gate-true
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/grype-scan-action@5c81b23afb2ea771b2d247807a12d90783328675  # v0.5.0
+        uses: lfreleng-actions/grype-scan-action@f65dca2762823cfc8f376e32fee9baa6f3292696  # v0.6.2
         with:
           sbom: 'tests/e2e/sbom-cyclonedx.json'
           gate-when: 'dependencies-changed'
@@ -288,7 +288,7 @@ jobs:
       - name: "Gate: changed=false"
         id: gate-false
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/grype-scan-action@5c81b23afb2ea771b2d247807a12d90783328675  # v0.5.0
+        uses: lfreleng-actions/grype-scan-action@f65dca2762823cfc8f376e32fee9baa6f3292696  # v0.6.2
         with:
           sbom: 'tests/e2e/sbom-cyclonedx.json'
           gate-when: 'dependencies-changed'
@@ -309,7 +309,7 @@ jobs:
       - name: "Gate: unresolved"
         id: gate-unresolved
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/grype-scan-action@5c81b23afb2ea771b2d247807a12d90783328675  # v0.5.0
+        uses: lfreleng-actions/grype-scan-action@f65dca2762823cfc8f376e32fee9baa6f3292696  # v0.6.2
         with:
           sbom: 'tests/e2e/sbom-cyclonedx.json'
           gate-when: 'dependencies-changed'
