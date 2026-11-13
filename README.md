@@ -20,8 +20,11 @@ base commit against `HEAD` with `git diff` and `git ls-tree`, and treats
 every path as bytes. When it cannot prove what the change touched, it
 reports an unresolved result, which the consumer gates as it does today.
 
-It runs on `ubuntu-latest` and `macos-latest` with the runner's `python3`
-and `git`, with no setup step, no download and no network access.
+It runs on `ubuntu-latest` and `macos-latest`. A commit-pinned
+`actions/setup-python` step selects Python 3.13, from the runner's tool
+cache where present, without touching the caller's `PATH`, so the
+caller's environment never chooses the interpreter; `git` comes from
+the runner or the `git` input.
 
 ## Usage Example
 
@@ -272,7 +275,8 @@ Dockerfile with a non-standard name through `patterns`.
 
 The detector is a standard-library Python package under
 `scripts/dependency_change/`, run as
-`python3 -I scripts/dependency_change/__main__.py` with the inputs passed
+`"$PYTHON" -I scripts/dependency_change/__main__.py`, where `PYTHON` is
+the interpreter path the setup step reports, with the inputs passed
 as environment variables. Isolated mode keeps the checkout, `PYTHONPATH`
 and the user site off `sys.path`, so a file in the change under review
 cannot shadow the detector or a standard-library module. It touches the
