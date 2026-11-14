@@ -65,10 +65,22 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # update-environment: false leaves the caller's PATH and Python
+    # variables untouched; the detector runs the interpreter by the
+    # absolute path this step reports.
+    - name: "Set up Python"
+      id: setup-python
+      # yamllint disable-line rule:line-length
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.13"
+        update-environment: false
+
     - name: "Detect dependency changes"
       id: detect
       shell: bash
       env:
+        PYTHON: ${{ steps.setup-python.outputs.python-path }}
         INPUT_ECOSYSTEMS: ${{ inputs.ecosystems }}
         INPUT_PATTERNS: ${{ inputs.patterns }}
         INPUT_PATH_PREFIX: ${{ inputs.path-prefix }}
@@ -82,4 +94,5 @@ runs:
         # -I keeps the checkout, PYTHONPATH and the user site off
         # sys.path; the entry point adds the action's own scripts
         # directory, so nothing in the change under review is imported.
-        python3 -I "${GITHUB_ACTION_PATH}/scripts/dependency_change/__main__.py"
+        "$PYTHON" -I \
+          "${GITHUB_ACTION_PATH}/scripts/dependency_change/__main__.py"
